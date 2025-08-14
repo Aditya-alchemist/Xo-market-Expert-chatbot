@@ -1,0 +1,213 @@
+{
+  "testQuestions": [
+    {
+      "id": 1,
+      "question": "What is XO Market?",
+      "category": "general",
+      "expectedSources": ["litepaper.md"],
+      "requiresLiveData": false,
+      "expectedTopics": ["prediction markets", "decentralized", "blockchain"],
+      "difficulty": "easy"
+    },
+    {
+      "id": 2,
+      "question": "How do I create a prediction market?",
+      "category": "usage",
+      "expectedSources": ["getting-started.md", "market-creation.md"],
+      "requiresLiveData": false,
+      "expectedTopics": ["market creation", "process", "parameters"],
+      "difficulty": "medium"
+    },
+    {
+      "id": 3,
+      "question": "What are the current active markets?",
+      "category": "live-data",
+      "expectedSources": [],
+      "requiresLiveData": true,
+      "expectedTopics": ["markets", "active", "current"],
+      "difficulty": "easy"
+    },
+    {
+      "id": 4,
+      "question": "What is the XO token used for?",
+      "category": "tokenomics",
+      "expectedSources": ["litepaper.md"],
+      "requiresLiveData": false,
+      "expectedTopics": ["XO token", "governance", "utility", "rewards"],
+      "difficulty": "medium"
+    },
+    {
+      "id": 5,
+      "question": "How is market resolution handled?",
+      "category": "technical",
+      "expectedSources": ["getting-started.md", "market-creation.md"],
+      "requiresLiveData": false,
+      "expectedTopics": ["resolution", "disputes", "community voting"],
+      "difficulty": "medium"
+    },
+    {
+      "id": 6,
+      "question": "What trading strategies work best on prediction markets?",
+      "category": "trading",
+      "expectedSources": ["trading-guide.md"],
+      "requiresLiveData": false,
+      "expectedTopics": ["strategies", "analysis", "risk management"],
+      "difficulty": "hard"
+    },
+    {
+      "id": 7,
+      "question": "How do I connect my wallet to XO Market?",
+      "category": "technical",
+      "expectedSources": ["getting-started.md"],
+      "requiresLiveData": false,
+      "expectedTopics": ["wallet", "connection", "setup"],
+      "difficulty": "easy"
+    },
+    {
+      "id": 8,
+      "question": "What makes a good prediction market question?",
+      "category": "market-creation",
+      "expectedSources": ["market-creation.md"],
+      "requiresLiveData": false,
+      "expectedTopics": ["question design", "clarity", "resolution criteria"],
+      "difficulty": "medium"
+    },
+    {
+      "id": 9,
+      "question": "How does the dispute resolution process work?",
+      "category": "governance",
+      "expectedSources": ["market-creation.md", "market-resolution-discussion.md"],
+      "requiresLiveData": false,
+      "expectedTopics": ["disputes", "community voting", "staking"],
+      "difficulty": "hard"
+    },
+    {
+      "id": 10,
+      "question": "What security measures does XO Market have?",
+      "category": "security",
+      "expectedSources": ["litepaper.md", "platform-launch.md"],
+      "requiresLiveData": false,
+      "expectedTopics": ["security", "audits", "smart contracts"],
+      "difficulty": "medium"
+    },
+    {
+      "id": 11,
+      "question": "How many markets are currently on the platform?",
+      "category": "live-data",
+      "expectedSources": [],
+      "requiresLiveData": true,
+      "expectedTopics": ["market count", "statistics"],
+      "difficulty": "easy"
+    },
+    {
+      "id": 12,
+      "question": "What are the platform fees for trading?",
+      "category": "economics",
+      "expectedSources": ["litepaper.md", "getting-started.md"],
+      "requiresLiveData": false,
+      "expectedTopics": ["fees", "costs", "trading"],
+      "difficulty": "easy"
+    },
+    {
+      "id": 13,
+      "question": "How does automated market making work?",
+      "category": "technical",
+      "expectedSources": ["litepaper.md", "trading-guide.md"],
+      "requiresLiveData": false,
+      "expectedTopics": ["AMM", "liquidity", "mechanism"],
+      "difficulty": "hard"
+    },
+    {
+      "id": 14,
+      "question": "What types of markets perform best on the platform?",
+      "category": "analysis",
+      "expectedSources": ["market-analysis.md", "platform-launch.md"],
+      "requiresLiveData": false,
+      "expectedTopics": ["performance", "categories", "volume"],
+      "difficulty": "medium"
+    },
+    {
+      "id": 15,
+      "question": "How do I manage risk when trading prediction markets?",
+      "category": "trading",
+      "expectedSources": ["trading-guide.md"],
+      "requiresLiveData": false,
+      "expectedTopics": ["risk management", "portfolio", "strategies"],
+      "difficulty": "hard"
+    },
+    {
+      "id": 16,
+      "question": "What blockchain networks does XO Market support?",
+      "category": "technical",
+      "expectedSources": ["litepaper.md"],
+      "requiresLiveData": false,
+      "expectedTopics": ["blockchain", "networks", "infrastructure"],
+      "difficulty": "medium"
+    },
+    {
+      "id": 17,
+      "question": "How accurate are prediction market prices?",
+      "category": "analysis",
+      "expectedSources": ["market-analysis.md"],
+      "requiresLiveData": false,
+      "expectedTopics": ["accuracy", "calibration", "performance"],
+      "difficulty": "medium"
+    },
+    {
+      "id": 18,
+      "question": "What are the governance mechanisms for the platform?",
+      "category": "governance",
+      "expectedSources": ["litepaper.md"],
+      "requiresLiveData": false,
+      "expectedTopics": ["governance", "DAO", "voting"],
+      "difficulty": "hard"
+    },
+    {
+      "id": 19,
+      "question": "How do I earn rewards on XO Market?",
+      "category": "incentives",
+      "expectedSources": ["litepaper.md", "getting-started.md"],
+      "requiresLiveData": false,
+      "expectedTopics": ["rewards", "incentives", "earning"],
+      "difficulty": "medium"
+    },
+    {
+      "id": 20,
+      "question": "What is the roadmap for future platform development?",
+      "category": "development",
+      "expectedSources": ["litepaper.md", "platform-launch.md"],
+      "requiresLiveData": false,
+      "expectedTopics": ["roadmap", "future", "development"],
+      "difficulty": "easy"
+    }
+  ],
+  "evaluationCriteria": {
+    "citationAccuracy": {
+      "weight": 0.3,
+      "description": "How accurately the chatbot cites relevant sources"
+    },
+    "answerRelevance": {
+      "weight": 0.25,
+      "description": "How well the answer addresses the question"
+    },
+    "sourceUtilization": {
+      "weight": 0.2,
+      "description": "How well the chatbot uses the expected sources"
+    },
+    "liveDataUsage": {
+      "weight": 0.15,
+      "description": "Appropriate use of live blockchain data when needed"
+    },
+    "responseTime": {
+      "weight": 0.1,
+      "description": "Speed of response generation"
+    }
+  },
+  "passingThresholds": {
+    "citationAccuracy": 0.8,
+    "answerRelevance": 0.75,
+    "sourceUtilization": 0.7,
+    "liveDataUsage": 0.85,
+    "averageResponseTime": 3000
+  }
+}

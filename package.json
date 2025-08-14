@@ -1,0 +1,45 @@
+{
+  "name": "xo-market-chatbot",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "ingest": "ts-node src/scripts/ingest.ts",
+    "discord-bot": "ts-node bot/discord-bot.ts",
+    "evaluate": "ts-node eval/evaluate.ts",
+    "setup": "npm run ingest && npm run evaluate"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "@langchain/community": "^0.3.50",
+    "@langchain/core": "^0.3.69",
+    "@langchain/google-genai": "^0.2.16",
+    "@langchain/openai": "^0.6.7",
+    "@langchain/pinecone": "^0.2.0",
+    "@langchain/textsplitters": "^0.1.0",
+    "@pinecone-database/pinecone": "^6.1.2",
+    "discord.js": "^14.21.0",
+    "dotenv": "^17.2.1",
+    "ethers": "^6.15.0",
+    "langchain": "^0.3.30",
+    "next": "15.4.6",
+    "openai": "^5.12.2",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "viem": "^2.33.3"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3",
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20.19.10",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "15.4.6",
+    "tailwindcss": "^4",
+    "ts-node": "^10.9.2",
+    "typescript": "^5"
+  }
+}
