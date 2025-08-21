@@ -80,6 +80,80 @@ Tip: There are no minimums, no gas fees, and no waiting. The interface is intent
 How does XO Market provide liquidity to markets?
 XO Market uses the Liquidity-Sensitive Logarithmic Market Scoring Rule (LS-LMSR) as its Automated Market Maker (AMM) to provide consistent liquidity and ensure every market is always tradable. This means traders can buy or sell shares at any time, and the price is determined algorithmically based on the current state of the market.
 
+What LS‑LMSR  means
+
+The market keeps a running tally of shares bought for each outcome: q = [q1, q2, …, qn].
+
+Prices are not set by an orderbook; they are computed from q using a smooth “softmax”-like formula.
+
+A liquidity parameter b controls how sensitive prices are to trades:
+
+Larger b → deeper market → the same trade moves price less (lower slippage).
+
+Smaller b → thinner market → the same trade moves price more (higher slippage).
+
+In LS‑LMSR, b grows with total liquidity Q so that active/bigger markets are naturally more stable.
+
+
+LS-LMSR formulas:
+
+Cost function (total cost at state q)
+C(q) = b · ln( Σ_{i=1..n} exp(q_i / b) )
+
+Instantaneous price of outcome i
+p_i = exp(q_i / b) / Σ_{j=1..n} exp(q_j / b)
+
+Liquidity schedule (how b scales with market liquidity)
+b = a · Q
+
+Where
+
+q_i = cumulative shares for outcome i (q = [q1, …, qn])
+
+b = liquidity parameter (higher b → less slippage)
+
+Q = total market liquidity (your protocol’s definition, e.g., TVL or total shares)
+
+a = fixed scaling constant
+
+ln = natural log, exp = exponential
+
+Prices sum to 1: Σ_i p_i = 1
+
+How to use these in practice
+
+Price computation: Use formula (2) to compute current prices from q and b.
+
+Trade cost: The amount a trader pays to move from q to q′ is ΔCost = C(q′) − C(q) using (1).
+
+Liquidity adaptation: As Q rises, b increases via (3), so identical trade sizes cause smaller price jumps in larger/healthier markets.
+
+Tiny numeric example
+
+Suppose a 2‑outcome market (YES/NO), b = 50, q = [10, exp(10/50)=exp(0.2)≈1.2214 for both YES and NO.
+
+Denominator = 1.2214+1.2214=2.4428 → pYES≈0.50, pNO≈0.50.
+
+Buy a little YES so q becomes :
+
+exp(12/50)=exp(0.24)≈1.2712; exp(10/50)=1.2214.
+
+Denominator = 1.2712+1.2214=2.4926 → pYES≈0.51, pNO≈0.49.
+
+If b were 200 instead of 50, the same +2 YES would move price less (deeper liquidity → smaller impact).
+
+
+
+“LS‑LMSR sets prices from cumulative shares q via a softmax with a liquidity knob b. Higher b means deeper liquidity and lower slippage. Prices: p_i = exp(q_i/b)/Σ_j exp(q_j/b). Trade cost is the change in C(q) where C(q)=b·ln(Σ_i exp(q_i/b)). In LS‑LMSR, b scales with total liquidity Q via b=a·Q, so active markets are naturally more stable.”
+
+Formulas only
+
+C(q) = b · ln( Σ_{i=1..n} exp(q_i / b) )
+
+p_i = exp(q_i / b) / Σ_{j=1..n} exp(q_j / b)
+
+b = a · Q
+
 When a user creates a market, they must provide an initial liquidity seed into the market’s pool. This initial liquidity subsidizes the market maker’s cost function and sets an opening price. Providing this seed capital enables active trading from the moment the market launches. In exchange for committing this capital (and taking on the AMM’s bounded risk of loss), market creators earn a fee on all trades in their market.
 
 This structure incentivizes the creation of popular, liquid markets while still ensuring that even relatively illiquid markets have continuous pricing. The LS-LMSR mechanism guarantees that there is always a price at which shares can be bought or sold, though the less liquidity in the pool, the higher the slippage will be for a given trade.
@@ -205,6 +279,8 @@ Real-money trading, fiat on-ramps, and permissionless market creation are planne
 Once the Beta launches, all users (not just invitees) will be able to deposit supported tokens, create new markets freely, and trade with real economic value involved. In other words, XO will transition from test tokens to real cryptocurrency and/or fiat at that time. The Beta will still be a testing phase, but on a larger scale and with core features unlocked.
 
 After a successful Beta period and further polishing, the project will proceed to a full Mainnet launch, which will introduce the complete platform features to the general public. Mainnet will mark the end of testing phases - at that point XO Market will be fully open, with real stakes and widespread access. (Keep an eye on XO’s announcements for Beta launch timelines and details as development progresses.)
+
+
 
 What are the official XO Market socials?
 Website: https://xo.market/

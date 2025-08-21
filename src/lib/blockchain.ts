@@ -1,302 +1,441 @@
 import { ethers } from 'ethers';
-import fs from 'fs';
-import path from 'path';
+import { EmbedBuilder } from 'discord.js';
 
-export interface MarketInfo {
-  id: string;
-  question: string;
-  creator: string;
-  endTime: number;
-  resolved: boolean;
-  outcome?: number;
+interface MarketStruct {
+  id: bigint;
+  winningOutcome: bigint;
+  resolver: string;
+  expiresAt: bigint;
+  startsAt: bigint;
+  creatorFeeBps: bigint;
+  collateralToken: string;
+  createdAt: bigint;
+  resolvedAt: bigint;
+  alpha: bigint;
+  outcomeCount: bigint;
+  status: bigint;
+  outcomeTokenStartIndex: bigint;
+  pausedAt: bigint;
+  collateralAmount: bigint;
+  redeemableAmountPerShare: bigint;
+}
+
+interface ExtendedMarketStruct {
+  market: MarketStruct;
+  collateralAmounts: bigint[];
+  outcomePrices: bigint[];
+}
+
+enum MarketStatus {
+  PENDING = 0,
+  ACTIVE = 1,
+  PAUSED = 2,
+  RESOLVED = 3,
+  CANCELLED = 4,
+  CLOSED = 5
+}
+
+export interface MarketData {
+  id: number;
+  title: string;
+  status: 'active' | 'closed' | 'resolved' | 'paused' | 'cancelled' | 'pending';
+  expiresAt: Date;
+  startsAt: Date;
+  createdAt: Date;
+  resolvedAt?: Date;
+  winningOutcome?: number;
+  outcomeCount: number;
+  collateralToken: string;
+  collateralAmount: string;
+  creatorFeeBps: number;
+  alpha: number;
+  resolver: string;
+  volume: string;
+  openInterest: string;
+  outcomePrices: string[];
+  outcomes?: string[];
+  description?: string;
   totalVolume?: string;
-  yesShares?: string;
-  noShares?: string;
-  active?: boolean;
-  participants?: number;
+  totalVolumeRaw?: string;
+  openInterestRaw?: string;
+  timeToClose?: number;
+  timeToResolve?: number;
+  currentPrices?: string[];
+  metadata?: {
+    title?: string;
+    description?: string;
+    outcomes?: string[];
+  };
+}
+
+export interface MarketMetadata {
+  title: string;
+  description?: string;
+  outcomes?: string[];
+}
+
+const XO_MARKET_ABI = [
+  "function getExtendedMarket(uint256 marketId) view returns (tuple(tuple(uint128 id, uint128 winningOutcome, address resolver, uint40 expiresAt, uint40 startsAt, uint16 creatorFeeBps, address collateralToken, uint40 createdAt, uint40 resolvedAt, uint16 alpha, uint8 outcomeCount, uint8 status, uint128 outcomeTokenStartIndex, uint40 pausedAt, uint256 collateralAmount, uint256 redeemableAmountPerShare) market, uint256[] collateralAmounts, uint256[] outcomePrices))",
+  "function getMarket(uint256 marketId) view returns (tuple(uint128 id, uint128 winningOutcome, address resolver, uint40 expiresAt, uint40 startsAt, uint16 creatorFeeBps, address collateralToken, uint40 createdAt, uint40 resolvedAt, uint16 alpha, uint8 outcomeCount, uint8 status, uint128 outcomeTokenStartIndex, uint40 pausedAt, uint256 collateralAmount, uint256 redeemableAmountPerShare))",
+  "function getPrices(uint256 marketId) view returns (uint256[])"
+];
+
+const NFT_ABI = [
+  "function tokenURI(uint256 tokenId) view returns (string)",
+  "function name() view returns (string)",
+  "function symbol() view returns (string)"
+];
+
+class FormatUtils {
+  static formatCurrency(amount: string | number, decimals: number = 2): string {
+    const num = typeof amount === 'string' ? parseFloat(amount) : amount;
+    if (isNaN(num)) return '$0.00';
+    
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals,
+    }).format(num);
+  }
+
+  static formatPrice(price: string | number): string {
+    const num = typeof price === 'string' ? parseFloat(price) : price;
+    if (isNaN(num)) return '$0.0000';
+    
+    return `$${num.toFixed(4)}`;
+  }
+
+  static formatTimeUntilExpiry(expiryDate: Date): string {
+    const now = new Date();
+    const timeDiff = expiryDate.getTime() - now.getTime();
+    
+    if (timeDiff <= 0) {
+      const pastTime = Math.abs(timeDiff);
+      const days = Math.floor(pastTime / (1000 * 60 * 60 * 24));
+      const hours = Math.floor((pastTime % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+      
+      if (days > 0) {
+        return `${days}d ${hours}h ago`;
+      } else {
+        return `${Math.floor(pastTime / (1000 * 60 * 60))}h ago`;
+      }
+    }
+
+    const days = Math.floor(timeDiff / (1000 * 60 * 60 * 24));
+    const hours = Math.floor((timeDiff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+    const minutes = Math.floor((timeDiff % (1000 * 60 * 60)) / (1000 * 60));
+
+    if (days > 0) {
+      return `in ${days}d ${hours}h`;
+    } else if (hours > 0) {
+      return `in ${hours}h ${minutes}m`;
+    } else {
+      return `in ${minutes}m`;
+    }
+  }
 }
 
 export class BlockchainTools {
   private provider: ethers.JsonRpcProvider;
+  private contract: ethers.Contract;
+  private nftContract: ethers.Contract;
   private contractAddress: string;
-  private contractABI: any[]= [];
+  private nftAddress: string;
+  private isConnected = false;
 
   constructor() {
-    this.provider = new ethers.JsonRpcProvider(
-      process.env.XO_MARKET_RPC_URL || 'https://testnet-rpc-1.xo.market/'
-    );
-    this.contractAddress = process.env.XO_MARKET_CONTRACT || '0x3cf19D0C88a14477DCaA0A45f4AF149a4C917523';
-    
-    this.loadContractABI();
+    const rpcUrl = process.env.XO_MARKET_RPC_URL || 'https://testnet-rpc-1.xo.market/';
+    const contractAddress = process.env.XO_MARKET_CONTRACT || '0x3cf19D0C88a14477DCaA0A45f4AF149a4C917523';
+    const nftAddress = process.env.XO_MARKET_NFT_CONTRACT || '0x550318A123d222e841776a281F51B09e8909E144';
+
+    this.provider = new ethers.JsonRpcProvider(rpcUrl);
+    this.contractAddress = contractAddress;
+    this.nftAddress = nftAddress;
+    this.contract = new ethers.Contract(contractAddress, XO_MARKET_ABI, this.provider);
+    this.nftContract = new ethers.Contract(nftAddress, NFT_ABI, this.provider);
   }
 
-  private loadContractABI(): void {
+  async init(): Promise<void> {
     try {
-      const abiPath = path.join(process.cwd(), 'abi.json');
+      const block = await this.provider.getBlockNumber();
+      console.log(`📡 Connected to block: ${block}`);
+      this.isConnected = true;
+    } catch (error) {
+      console.error('❌ Blockchain connection failed:', error);
+      this.isConnected = false;
+      throw error;
+    }
+  }
+
+  async getMarketMetadata(marketId: number): Promise<MarketMetadata | null> {
+    try {
+      const tokenURI = await this.nftContract.tokenURI(marketId);
       
-      console.log(`🔍 Looking for ABI file at: ${abiPath}`);
-      
-      if (fs.existsSync(abiPath)) {
-        const abiData = fs.readFileSync(abiPath, 'utf-8');
-        this.contractABI = JSON.parse(abiData);
-        console.log(`✅ Loaded XO Market contract ABI with ${this.contractABI.length} items`);
+      if (tokenURI.startsWith('data:application/json;base64,')) {
+        const base64Data = tokenURI.split(',')[1];
+        const jsonString = Buffer.from(base64Data, 'base64').toString('utf-8');
+        const metadata = JSON.parse(jsonString);
         
-        const functions = this.contractABI
-          .filter(item => item.type === 'function')
-          .map(func => func.name);
-        console.log(`📋 Available contract functions: ${functions.join(', ')}`);
-      } else {
-        console.warn(`⚠️ abi.json not found at ${abiPath}, using fallback ABI`);
-        this.contractABI = this.getFallbackABI();
+        return {
+          title: metadata.title || metadata.name || metadata.description || `Market #${marketId}`,
+          description: metadata.description,
+          outcomes: metadata.attributes?.find((attr: any) => attr.trait_type === 'outcomes')?.value?.split(',') || undefined
+        };
+      } else if (tokenURI.startsWith('http')) {
+        const response = await fetch(tokenURI);
+        const metadata = await response.json();
+        
+        return {
+          title: metadata.title || metadata.name || metadata.description || `Market #${marketId}`,
+          description: metadata.description,
+          outcomes: metadata.attributes?.find((attr: any) => attr.trait_type === 'outcomes')?.value?.split(',') || undefined
+        };
       }
-    } catch (error) {
-      console.error('❌ Failed to load ABI:', error);
-      this.contractABI = this.getFallbackABI();
-    }
-  }
-
-  private getFallbackABI(): any[] {
-    console.log('📋 Using fallback ABI');
-    return [
-      {
-        "type": "function",
-        "name": "totalMarkets",
-        "inputs": [],
-        "outputs": [{"type": "uint256", "name": ""}],
-        "stateMutability": "view"
-      },
-      {
-        "type": "function",
-        "name": "markets",
-        "inputs": [{"type": "uint256", "name": "marketId"}],
-        "outputs": [
-          {"type": "string", "name": "question"},
-          {"type": "address", "name": "creator"},
-          {"type": "uint256", "name": "endTime"},
-          {"type": "bool", "name": "resolved"},
-          {"type": "bool", "name": "active"}
-        ],
-        "stateMutability": "view"
-      }
-    ];
-  }
-
-  private async testConnection(): Promise<boolean> {
-    try {
-      const network = await this.provider.getNetwork();
-      const blockNumber = await this.provider.getBlockNumber();
-      console.log(`🔗 Connected to XO Market testnet (Chain ID: ${network.chainId}), Block: ${blockNumber}`);
-      return true;
-    } catch (error) {
-      console.error('❌ XO Market testnet connection failed:', error);
-      return false;
-    }
-  }
-
-  private async contractExists(): Promise<boolean> {
-    try {
-      const code = await this.provider.getCode(this.contractAddress);
-      const exists = code !== '0x';
-      console.log(`📋 Contract ${this.contractAddress}: ${exists ? 'Found' : 'Not found'}`);
-      return exists;
-    } catch (error) {
-      console.error('❌ Contract check failed:', error);
-      return false;
-    }
-  }
-
-  async getCurrentMarkets(): Promise<MarketInfo[]> {
-    try {
-      console.log('🔍 Connecting to XO Market testnet with loaded ABI...');
       
-      const connected = await this.testConnection();
-      if (!connected) {
-        throw new Error('Cannot connect to XO Market testnet');
-      }
+      return null;
+    } catch (error) {
+      console.warn(`Could not fetch metadata for market ${marketId}:`, error);
+      return null;
+    }
+  }
 
-      const exists = await this.contractExists();
-      if (!exists) {
-        console.log('⚠️ XO Market contract not found, using mock data');
-        return this.getXOMockMarkets();
-      }
+  private parseMarketStatus(status: number): MarketData['status'] {
+    switch (status) {
+      case MarketStatus.PENDING: return 'pending';
+      case MarketStatus.ACTIVE: return 'active';
+      case MarketStatus.PAUSED: return 'paused';
+      case MarketStatus.RESOLVED: return 'resolved';
+      case MarketStatus.CANCELLED: return 'cancelled';
+      case MarketStatus.CLOSED: return 'closed';
+      default: return 'active';
+    }
+  }
 
-      const contract = new ethers.Contract(
-        this.contractAddress,
-        this.contractABI,
-        this.provider
+  // ========== Main Market Fetching ==========
+  async getExtendedMarket(marketId: number): Promise<MarketData | null> {
+    try {
+      const [extendedData, metadata] = await Promise.all([
+        this.contract.getExtendedMarket(marketId),
+        this.getMarketMetadata(marketId)
+      ]);
+      
+      const market = extendedData.market;
+      
+      const outcomePrices = extendedData.outcomePrices.map((price: bigint) => 
+        ethers.formatUnits(price, 6)
       );
 
-      console.log('📋 Contract instance created with loaded ABI');
-
-      const markets: MarketInfo[] = [];
+      const totalCollateral = extendedData.collateralAmounts.reduce((sum: bigint, amount: bigint) => sum + amount, BigInt(0));
       
-      try {
-        const totalMarkets = await this.callWithTimeout(contract.totalMarkets(), 10000);
-        console.log(`📊 Total markets on XO testnet: ${totalMarkets}`);
-
-        const limit = Math.min(Number(totalMarkets), 10); // Limit to 10 for performance
-
-        for (let i = 0; i < limit; i++) {
-          try {
-            const marketData = await this.callWithTimeout(contract.markets(i), 5000);
-            
-            let additionalInfo = null;
-            try {
-              if (contract.getMarketInfo) {
-                additionalInfo = await this.callWithTimeout(contract.getMarketInfo(i), 3000);
-              }
-            } catch {
-            }
-
-            const market: MarketInfo = {
-              id: i.toString(),
-              question: marketData.question || marketData[0] || `Market ${i}`,
-              creator: marketData.creator || marketData[1] || '0x0000000000000000000000000000000000000000',
-              endTime: Number(marketData.endTime || marketData[2] || Date.now() + 86400000),
-              resolved: marketData.resolved || marketData[3] || false,
-              active: marketData.active !== undefined ? marketData.active : (marketData[4] !== undefined ? marketData[4] : true),
-            };
-
-            if (additionalInfo) {
-              market.totalVolume = ethers.formatEther(additionalInfo.totalVolume || 0);
-            }
-
-            markets.push(market);
-            console.log(`✅ Loaded market ${i}: ${market.question.substring(0, 50)}...`);
-
-          } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-console.warn(`⚠️ Could not fetch market ${i}:`, errorMessage);
-          }
-        }
-
-      } catch (error) {
-        console.error('❌ Failed to get markets from contract:', error);
-        
-        try {
-          if (contract.getActiveMarketCount) {
-            const activeCount = await this.callWithTimeout(contract.getActiveMarketCount(), 5000);
-            console.log(`📊 Active markets: ${activeCount}`);
-            
-            if (Number(activeCount) > 0) {
-              return this.getXOMockMarkets(Number(activeCount));
-            }
-          }
-        } catch {
-          console.log('📊 Using fallback data due to contract call failures');
-        }
+      const resolvedAt = market.resolvedAt > 0 ? new Date(Number(market.resolvedAt) * 1000) : undefined;
+      const winningOutcome = market.winningOutcome > 0 ? Number(market.winningOutcome) : undefined;
+      
+      let actualStatus = this.parseMarketStatus(Number(market.status));
+      if (resolvedAt && winningOutcome !== undefined) {
+        actualStatus = 'resolved';
+      } else if (new Date() > new Date(Number(market.expiresAt) * 1000)) {
+        actualStatus = 'closed';
       }
 
-      console.log(`✅ Successfully retrieved ${markets.length} markets from XO testnet using ABI`);
-      return markets.length > 0 ? markets : this.getXOMockMarkets();
+      const expiresAt = new Date(Number(market.expiresAt) * 1000);
+      const now = new Date();
+      const timeToClose = Math.max(0, Math.floor((expiresAt.getTime() - now.getTime()) / 1000));
+      const timeToResolve = resolvedAt ? 0 : Math.max(0, timeToClose + 86400);
 
+      const volumeFormatted = ethers.formatUnits(totalCollateral, 6);
+      const oiFormatted = ethers.formatUnits(market.collateralAmount, 6);
+      
+      return {
+        id: Number(market.id),
+        title: metadata?.title || `Market #${marketId}`,
+        status: actualStatus,
+        expiresAt,
+        startsAt: new Date(Number(market.startsAt) * 1000),
+        createdAt: new Date(Number(market.createdAt) * 1000),
+        resolvedAt,
+        winningOutcome,
+        outcomeCount: Number(market.outcomeCount),
+        collateralToken: market.collateralToken,
+        collateralAmount: ethers.formatUnits(market.collateralAmount, 6),
+        creatorFeeBps: Number(market.creatorFeeBps),
+        alpha: Number(market.alpha),
+        resolver: market.resolver,
+        volume: volumeFormatted,
+        openInterest: oiFormatted,
+        outcomePrices,
+        outcomes: metadata?.outcomes,
+        description: metadata?.description,
+        totalVolume: volumeFormatted,
+        totalVolumeRaw: volumeFormatted,
+        openInterestRaw: oiFormatted,
+        timeToClose,
+        timeToResolve,
+        currentPrices: outcomePrices.map((p: string) => (parseFloat(p) * 100).toFixed(2)),
+        metadata: {
+          title: metadata?.title || `Market #${marketId}`,
+          description: metadata?.description,
+          outcomes: metadata?.outcomes
+        }
+      };
     } catch (error) {
-      console.error('🚫 XO Market blockchain fetch failed:', error);
-      return this.getXOMockMarkets();
+      console.error(`Error fetching extended market ${marketId}:`, error);
+      return null;
     }
   }
 
-  private async callWithTimeout<T>(promise: Promise<T>, timeoutMs: number = 5000): Promise<T> {
-    return Promise.race([
-      promise,
-      new Promise<T>((_, reject) => 
-        setTimeout(() => reject(new Error(`Contract call timeout after ${timeoutMs}ms`)), timeoutMs)
+  async getMarketById(marketId: string): Promise<MarketData | null> {
+    const id = parseInt(marketId);
+    return await this.getExtendedMarket(id);
+  }
+
+  async getCurrentMarkets(): Promise<MarketData[]> {
+    const marketIds = Array.from({ length: 30 }, (_, i) => i + 1);
+    const markets = await this.getMultipleMarkets(marketIds);
+    return markets;
+  }
+
+  async getActiveMarkets(): Promise<MarketData[]> {
+    const allMarkets = await this.getCurrentMarkets();
+    return allMarkets.filter(market => market.status === 'active');
+  }
+
+  async getClosingSoonMarkets(hoursAhead: number = 24): Promise<MarketData[]> {
+    const activeMarkets = await this.getActiveMarkets();
+    const cutoffTime = new Date(Date.now() + hoursAhead * 60 * 60 * 1000);
+    
+    return activeMarkets
+      .filter(market => market.expiresAt <= cutoffTime)
+      .sort((a, b) => a.expiresAt.getTime() - b.expiresAt.getTime());
+  }
+
+  async getHighVolumeMarkets(limit: number = 10): Promise<MarketData[]> {
+    const activeMarkets = await this.getActiveMarkets();
+    
+    return activeMarkets
+      .sort((a, b) => parseFloat(b.volume) - parseFloat(a.volume))
+      .slice(0, limit);
+  }
+
+  async getNewlyCreatedMarkets(daysBack: number = 7): Promise<MarketData[]> {
+    const allMarkets = await this.getCurrentMarkets();
+    const cutoffTime = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000);
+    
+    return allMarkets
+      .filter(market => market.createdAt >= cutoffTime)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  }
+
+  async getResolvedMarkets(limit: number = 10): Promise<MarketData[]> {
+    const allMarkets = await this.getCurrentMarkets();
+    
+    return allMarkets
+      .filter(market => market.status === 'resolved')
+      .sort((a, b) => (b.resolvedAt?.getTime() || 0) - (a.resolvedAt?.getTime() || 0))
+      .slice(0, limit);
+  }
+
+  async getMarketsByStatus(status: string): Promise<MarketData[]> {
+    const allMarkets = await this.getCurrentMarkets();
+    return allMarkets.filter(market => market.status.toLowerCase() === status.toLowerCase());
+  }
+
+  getConnectionStatus() {
+    return {
+      connected: this.isConnected,
+      blockNumber: 0,
+      knownMarkets: 30
+    };
+  }
+
+  async getMultipleMarkets(marketIds: number[]): Promise<MarketData[]> {
+    const markets = await Promise.allSettled(
+      marketIds.map(id => this.getExtendedMarket(id))
+    );
+
+    return markets
+      .filter((result): result is PromiseFulfilledResult<MarketData | null> => 
+        result.status === 'fulfilled' && result.value !== null
       )
-    ]);
-  }
-
-  private getXOMockMarkets(count: number = 5): MarketInfo[] {
-    console.log(`📋 Providing ${count} XO Market demo markets`);
-    
-    const mockMarkets: MarketInfo[] = [
-      {
-        id: "0",
-        question: "Will Bitcoin reach $100,000 by end of 2024?",
-        creator: "0x1234567890abcdef1234567890abcdef12345678",
-        endTime: new Date('2024-12-31').getTime(),
-        resolved: false,
-        active: true,
-        totalVolume: "2.5",
-        participants: 87,
-      },
-      {
-        id: "1",
-        question: "Will XO Market have 1000+ active users by Q1 2025?",
-        creator: "0xabcdef1234567890abcdef1234567890abcdef12",
-        endTime: new Date('2025-03-31').getTime(),
-        resolved: false,
-        active: true,
-        totalVolume: "1.8",
-        participants: 52,
-      },
-      {
-        id: "2",
-        question: "Will AI achieve breakthrough in prediction markets by 2025?",
-        creator: "0x9876543210fedcba9876543210fedcba98765432",
-        endTime: new Date('2025-12-31').getTime(),
-        resolved: false,
-        active: true,
-        totalVolume: "3.2",
-        participants: 134,
-      },
-      {
-        id: "3",
-        question: "Will Ethereum price exceed $5000 in 2025?",
-        creator: "0xfedcba9876543210fedcba9876543210fedcba98",
-        endTime: new Date('2025-12-31').getTime(),
-        resolved: false,
-        active: true,
-        totalVolume: "0.9",
-        participants: 23,
-      },
-      {
-        id: "4",
-        question: "Will decentralized prediction markets gain mainstream adoption?",
-        creator: "0x1111222233334444555566667777888899990000",
-        endTime: new Date('2026-01-31').getTime(),
-        resolved: false,
-        active: true,
-        totalVolume: "4.1",
-        participants: 98,
-      }
-    ];
-
-    return mockMarkets.slice(0, count);
-  }
-
-  async getNetworkInfo() {
-    try {
-      const network = await this.provider.getNetwork();
-      const blockNumber = await this.provider.getBlockNumber();
-      
-      return {
-        chainId: Number(network.chainId),
-        name: "XO Market Testnet",
-        blockNumber,
-        rpcUrl: process.env.XO_MARKET_RPC_URL,
-        contractAddress: this.contractAddress,
-        abiLoaded: this.contractABI.length > 0,
-        availableMethods: this.getAvailableMethods(),
-      };
-    } catch (error) {
-      console.error('Error fetching XO Market network info:', error);
-      return {
-        chainId: 0,
-        name: "XO Market Testnet (offline)",
-        blockNumber: 0,
-        rpcUrl: process.env.XO_MARKET_RPC_URL,
-        contractAddress: this.contractAddress,
-        abiLoaded: false,
-      };
-    }
-  }
-
-  private getAvailableMethods(): string[] {
-    if (!this.contractABI) return [];
-    
-    return this.contractABI
-      .filter(item => item.type === 'function')
-      .map(func => func.name)
-      .filter(Boolean);
+      .map(result => result.value!);
   }
 }
+
+export class EmbedUtils {
+  static createMarketDataEmbed(market: MarketData): EmbedBuilder {
+    const embed = new EmbedBuilder()
+      .setColor(0x7C3AED) 
+      .setTitle(`Market #${market.id} – ${market.title}`)
+      .setTimestamp();
+
+    const statusEmoji = {
+      active: '🟢',
+      closed: '🔴',
+      resolved: '✅',
+      paused: '⏸️',
+      cancelled: '❌',
+      pending: '🕒'
+    }[market.status] || '❓';
+
+    embed.setDescription(`${statusEmoji} **Status:** ${market.status.toUpperCase()}`);
+
+    embed.addFields(
+      {
+        name: '📊 Market Info',
+        value: `**Expires:** ${FormatUtils.formatTimeUntilExpiry(market.expiresAt)}\n**Volume:** ${FormatUtils.formatCurrency(market.volume)} USDC\n**Open Interest:** ${FormatUtils.formatCurrency(market.openInterest)} USDC`,
+        inline: true
+      },
+      {
+        name: '⚙️ Parameters', 
+        value: `**Creator Fee:** ${(market.creatorFeeBps / 100).toFixed(2)}%\n**Alpha:** ${market.alpha}\n**Outcomes:** ${market.outcomeCount}`,
+        inline: true
+      }
+    );
+
+    if (market.outcomePrices.length > 0) {
+      const priceText = market.outcomePrices
+        .map((price, i) => {
+          const outcomeName = market.outcomes?.[i] || `Outcome ${i + 1}`;
+          return `**${outcomeName}:** ${FormatUtils.formatPrice(price)}`;
+        })
+        .join('\n');
+      
+      embed.addFields({
+        name: '💰 Current Prices',
+        value: priceText,
+        inline: false
+      });
+    }
+
+    embed.setFooter({ 
+      text: '📊 Live data from XO Market Contract • Fresh: <1min ago' 
+    });
+
+    return embed;
+  }
+
+  static createErrorEmbed(error: string, suggestions?: string[]): EmbedBuilder {
+    const embed = new EmbedBuilder()
+      .setColor(0xEF4444) // Red for errors
+      .setTitle('❌ Error')
+      .setDescription(error)
+      .setTimestamp();
+
+    if (suggestions && suggestions.length > 0) {
+      embed.addFields({
+        name: '💡 Suggestions',
+        value: suggestions.map(s => `• ${s}`).join('\n'),
+        inline: false
+      });
+    }
+
+    embed.setFooter({ 
+      text: '🔍 Check your input and try again' 
+    });
+
+    return embed;
+  }
+}
+
+export const xoMarketService = new BlockchainTools(); 
+
