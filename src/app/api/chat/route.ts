@@ -6,6 +6,16 @@ import { Pinecone } from '@pinecone-database/pinecone';
 import { generateGeminiResponse } from '@/lib/gemini';
 import { BlockchainTools } from '@/lib/blockchain';
 
+// Simple lazy singleton to avoid rescanning every request
+let BT_SINGLETON: BlockchainTools | null = null;
+async function getBT(): Promise<BlockchainTools> {
+  if (!BT_SINGLETON) {
+    BT_SINGLETON = new BlockchainTools();
+    await BT_SINGLETON.init();
+  }
+  return BT_SINGLETON;
+}
+
 interface ChatResponse {
   answer: string;
   sources: string[];
@@ -19,9 +29,10 @@ interface ChatResponse {
 
 interface QueryAnalysis {
   needsLiveData: boolean;
-  queryType: 'single-market' | 'browse' | 'general';
+  queryType: 'single-market' | 'browse' | 'general' | 'search';
   marketId?: string;
-  browseType?: 'active' | 'closing-soon' | 'high-volume' | 'newly-created' | 'resolved' | 'paused' | 'closed';
+  searchTerm?: string;
+  browseType?: 'active' | 'closing-soon' | 'high-volume' | 'newly-created' | 'resolved' | 'paused' | 'closed' | 'pending';
   timeframe?: number;
 }
 
@@ -29,246 +40,169 @@ function analyzeQuery(query: string): QueryAnalysis {
   const q = query.toLowerCase();
 
   const idMatch = q.match(/\b(?:market|id)\s*(\d+)\b/);
-  const marketId = idMatch ? idMatch[1] : undefined;
+  if (idMatch) return { needsLiveData: true, queryType: 'single-market', marketId: idMatch[1] };
 
-  if (marketId) {
-    return { needsLiveData: true, queryType: 'single-market', marketId };
+  const searchHints = ['ufc','bitcoin','election','trump','biden','nfl','nba','football','basketball','crypto','ethereum','stock','tesla','apple','google','weather','temperature','rain','snow','sports','politics'];
+  const hint = searchHints.find(t => q.includes(t));
+  if (hint || q.includes('about ') || q.includes('find ') || q.includes('search')) {
+    const term = hint || q.replace(/\b(tell me about|about|find|search|market)\b/g, '').trim();
+    if (term && term.length > 2) return { needsLiveData: true, queryType: 'search', searchTerm: term };
   }
 
-  if (q.includes('closing soon') || q.includes('ending soon')) {
-    return { needsLiveData: true, queryType: 'browse', browseType: 'closing-soon', timeframe: 24 };
-  }
-  if (q.includes('high volume') || q.includes('top volume') || q.includes('popular')) {
-    return { needsLiveData: true, queryType: 'browse', browseType: 'high-volume' };
-  }
-  if (q.includes('new') || q.includes('recent') || q.includes('latest')) {
-    return { needsLiveData: true, queryType: 'browse', browseType: 'newly-created', timeframe: 7 };
-  }
-  if (q.includes('resolved') || q.includes('completed') || q.includes('finished')) {
-    return { needsLiveData: true, queryType: 'browse', browseType: 'resolved' };
-  }
-  if (q.includes('paused')) {
-    return { needsLiveData: true, queryType: 'browse', browseType: 'paused' };
-  }
-  if (q.includes('closed')) {
-    return { needsLiveData: true, queryType: 'browse', browseType: 'closed' };
-  }
+  if (q.includes('closing soon') || q.includes('ending soon')) return { needsLiveData: true, queryType: 'browse', browseType: 'closing-soon', timeframe: 24 };
+  if (q.includes('high volume') || q.includes('top volume') || q.includes('popular')) return { needsLiveData: true, queryType: 'browse', browseType: 'high-volume' };
+  if (q.includes('new') || q.includes('recent') || q.includes('latest')) return { needsLiveData: true, queryType: 'browse', browseType: 'newly-created', timeframe: 7 };
+  if (q.includes('resolved') || q.includes('completed') || q.includes('finished')) return { needsLiveData: true, queryType: 'browse', browseType: 'resolved' };
+  if (q.includes('paused')) return { needsLiveData: true, queryType: 'browse', browseType: 'paused' };
+  if (q.includes('closed')) return { needsLiveData: true, queryType: 'browse', browseType: 'closed' };
+  if (q.includes('pending')) return { needsLiveData: true, queryType: 'browse', browseType: 'pending' };
 
   const needsLiveData = /\b(current|live|active|real-time|now|today|markets|status|price|fetch|all)\b/.test(q);
-  return { needsLiveData, queryType: needsLiveData ? 'browse' : 'general', browseType: needsLiveData ? 'active' as const : undefined };
+  return { needsLiveData, queryType: needsLiveData ? 'browse' : 'general', browseType: needsLiveData ? 'active' : undefined };
+}
+
+function formatVolume(numStr: string): string {
+  const n = Number(numStr);
+  if (!isFinite(n)) return '$0';
+  if (n >= 1_000_000_000) return `$${(n / 1_000_000_000).toFixed(1)}B`;
+  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `$${(n / 1_000).toFixed(1)}K`;
+  return `$${n.toFixed(0)}`;
 }
 
 function formatMarketDataCards(markets: any[], queryType: string): string {
-  if (!markets || markets.length === 0) return 'No markets found matching your criteria.';
+  if (!markets?.length) return 'No markets found matching your criteria.';
 
-  const formatTime = (seconds: number): string => {
-    if (seconds <= 0) return 'Expired';
-    const days = Math.floor(seconds / 86400);
-    const hours = Math.floor((seconds % 86400) / 3600);
-    const minutes = Math.floor((seconds % 3600) / 60);
-    
-    if (days > 0) return `${days}d ${hours}h`;
-    if (hours > 0) return `${hours}h ${minutes}m`;
-    return `${minutes}m`;
+  const formatTime = (s: number) => {
+    if (s <= 0) return 'Expired';
+    const d = Math.floor(s / 86400);
+    const h = Math.floor((s % 86400) / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    return d > 0 ? `${d}d ${h}h` : h > 0 ? `${h}h ${m}m` : `${m}m`;
   };
 
-  const formatBigVolume = (volumeStr: string): string => {
-    try {
-      let cleanStr = volumeStr.replace(/[$,]/g, '');
-      
-      if (cleanStr.includes('e')) {
-        const num = parseFloat(cleanStr);
-        const scaledNum = num * 1000000;
-        
-        if (scaledNum >= 1000000000) return `$${(scaledNum / 1000000000).toFixed(1)}B`;
-        if (scaledNum >= 1000000) return `$${(scaledNum / 1000000).toFixed(1)}M`;
-        if (scaledNum >= 1000) return `$${(scaledNum / 1000).toFixed(1)}k`;
-        if (scaledNum >= 1) return `$${scaledNum.toFixed(0)}`;
-        
-        return `$${num.toFixed(6)}`;
-      }
-      
-      const num = parseFloat(cleanStr);
-      if (isNaN(num)) return volumeStr;
-      
-      if (num >= 1000000) return `$${(num / 1000000).toFixed(1)}M`;
-      if (num >= 1000) return `$${(num / 1000).toFixed(1)}k`;
-      if (num >= 1) return `$${num.toFixed(0)}`;
-      
-      const scaled = num * 1000000;
-      if (scaled >= 1000000) return `$${(scaled / 1000000).toFixed(1)}M`;
-      if (scaled >= 1000) return `$${(scaled / 1000).toFixed(1)}k`;
-      if (scaled >= 1) return `$${scaled.toFixed(0)}`;
-      
-      return `$${num.toFixed(6)}`;
-    } catch {
-      return volumeStr;
-    }
+  const statusEmoji: Record<string, string> = {
+    active: '🟢', pending: '🟡', closed: '🔴', resolved: '✅', paused: '⏸️', cancelled: '❌'
   };
 
-  let out = `🎯 **${markets.length} ${queryType.toUpperCase()} PREDICTION MARKETS**\n\n`;
-  
-  markets.forEach((m, i) => {
-    const title = (m.metadata?.title || m.title || `Market ${m.id}`).slice(0, 65);
-    
+  let out = `🎯 **${markets.length} ${queryType.toUpperCase()} MARKETS**\n\n`;
+  markets.forEach((m: any, i: number) => {
+    const title = (m.metadata?.title || m.title || `Market ${m.id}`).slice(0, 80);
+    const emoji = statusEmoji[m.status] || '❓';
     out += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
     out += `**${i + 1}. ${title}**\n`;
-    out += `🆔 Market ID: ${m.id} • Status: ${m.status}\n\n`;
-    
-    out += `💎 **TRADING VOLUME:** ${formatBigVolume(m.totalVolume || m.volume || '0')}\n`;
-    out += `🏦 **OPEN INTEREST:** ${formatBigVolume(m.openInterest || '0')}\n`;
-    out += `⏰ **TIME REMAINING:** ${formatTime(m.timeToClose || 0)}\n`;
-    out += `💵 **CREATOR FEE:** ${(m.creatorFeeBps / 100).toFixed(2)}%\n\n`;
-    
-    if (Array.isArray(m.currentPrices) && m.currentPrices.length > 0) {
-      out += `📊 **CURRENT ODDS:**\n`;
+    out += `${emoji} **Status:** ${m.status.toUpperCase()} • **ID:** ${m.id}\n\n`;
+    out += `💰 **Volume:** ${formatVolume(m.totalVolume || m.volume || '0')}\n`;
+    out += `💵 **Creator Fee:** ${(m.creatorFeeBps / 100).toFixed(2)}%\n`;
+    out += `⏰ **Time:** ${formatTime(m.timeToClose || 0)}\n`;
+    out += `🎯 **Outcomes:** ${m.outcomeCount}\n\n`;
+    if (Array.isArray(m.currentPrices) && m.currentPrices.length) {
+      out += `📊 **Current Odds:**\n`;
       m.currentPrices.forEach((p: string, idx: number) => {
-        const outcome = m.metadata?.outcomes?.[idx] || m.outcomes?.[idx] || `Outcome ${idx + 1}`;
-        out += `   • ${outcome}: **${p}%**\n`;
+        const name = m.metadata?.outcomes?.[idx] || m.outcomes?.[idx] || `Option ${idx + 1}`;
+        out += `   • ${name}: **${p}%**\n`;
       });
       out += '\n';
     }
-    
-    if (m.metadata?.description && m.metadata.description.trim() !== '') {
-      const desc = String(m.metadata.description).slice(0, 100);
-      out += `📝 **Description:** ${desc}${desc.length === 100 ? '...' : ''}\n\n`;
+    if (m.metadata?.description?.trim()) {
+      const desc = String(m.metadata.description).slice(0, 120);
+      out += `📝 ${desc}${desc.length === 120 ? '...' : ''}\n\n`;
     }
-    
     out += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
   });
-  
   return out;
 }
 
-export async function POST(request: NextRequest) {
+export async function POST(req: NextRequest) {
   const start = Date.now();
   try {
-    const { query } = await request.json();
+    const { query } = await req.json();
     if (!query || typeof query !== 'string') {
       return NextResponse.json({ error: 'Valid query string is required' }, { status: 400 });
     }
 
     const analysis = analyzeQuery(query);
 
-    const requiredVars = ['PINECONE_API_KEY', 'GOOGLE_GEMINI_API_KEY', 'XO_MARKET_RPC_URL'];
-    for (const varName of requiredVars) {
-      if (!process.env[varName]) {
-        throw new Error(`${varName} environment variable is not set`);
-      }
+    // Env validation
+    for (const v of ['PINECONE_API_KEY', 'GOOGLE_GEMINI_API_KEY', 'XO_MARKET_RPC_URL']) {
+      if (!process.env[v]) throw new Error(`${v} environment variable is not set`);
     }
 
+    // Docs retrieval
     const pinecone = new Pinecone({ apiKey: process.env.PINECONE_API_KEY! });
-    const indexName = process.env.PINECONE_INDEX || 'xo-market-docs';
-    const index = pinecone.Index(indexName);
-
-    const embeddings = new GoogleGenerativeAIEmbeddings({
-      apiKey: process.env.GOOGLE_GEMINI_API_KEY!,
-      model: 'text-embedding-004',
-    });
-
-    const vectorStore = await PineconeStore.fromExistingIndex(embeddings, {
-      pineconeIndex: index,
-      textKey: 'content',
-    });
-
+    const index = pinecone.Index(process.env.PINECONE_INDEX || 'xo-market-docs');
+    const embeddings = new GoogleGenerativeAIEmbeddings({ apiKey: process.env.GOOGLE_GEMINI_API_KEY!, model: 'text-embedding-004' });
+    const vectorStore = await PineconeStore.fromExistingIndex(embeddings, { pineconeIndex: index, textKey: 'content' });
     const retrieval = await vectorStore.similaritySearchWithScore(query, 5);
-    const documents = retrieval.map(([doc, score], i) => ({
-      content: doc.pageContent,
-      source: doc.metadata?.source || 'unknown',
-      score,
-      index: i + 1,
-    }));
+    const documents = retrieval.map(([doc, score], i) => ({ content: doc.pageContent, source: doc.metadata?.source || 'unknown', score, index: i + 1 }));
 
+    // Live data
     let liveData: any = null;
     let dataFreshness = '';
     let liveDataError = '';
 
     if (analysis.needsLiveData) {
       try {
-        console.log('🔍 Attempting to fetch live blockchain data...');
-        const bt = new BlockchainTools();
-        await bt.init();
+        console.log('🔍 Fetching live blockchain data...');
+        const bt = await getBT();
 
         if (analysis.queryType === 'single-market' && analysis.marketId) {
           liveData = await bt.getMarketById(analysis.marketId);
           dataFreshness = `Live Data • ${new Date().toISOString()}`;
+        } else if (analysis.queryType === 'search' && analysis.searchTerm) {
+          liveData = await bt.searchMarkets(analysis.searchTerm);
+          dataFreshness = `Search Results (${Array.isArray(liveData) ? liveData.length : 0} markets) • ${new Date().toISOString()}`;
         } else if (analysis.queryType === 'browse') {
           switch (analysis.browseType) {
-            case 'closing-soon':
-              liveData = await bt.getClosingSoonMarkets(analysis.timeframe || 24);
-              break;
-            case 'high-volume':
-              liveData = await bt.getHighVolumeMarkets(10);
-              break;
-            case 'newly-created':
-              liveData = await bt.getNewlyCreatedMarkets(analysis.timeframe || 7);
-              break;
-            case 'resolved':
-              liveData = await bt.getResolvedMarkets(10);
-              break;
-            case 'paused':
-              liveData = await bt.getMarketsByStatus('Paused');
-              break;
-            case 'closed':
-              liveData = await bt.getMarketsByStatus('Closed');
-              break;
-            default:
-              liveData = await bt.getActiveMarkets();
+            case 'closing-soon':  liveData = await bt.getClosingSoonMarkets(analysis.timeframe || 24); break;
+            case 'high-volume':   liveData = await bt.getHighVolumeMarkets(10); break;
+            case 'newly-created': liveData = await bt.getNewlyCreatedMarkets(analysis.timeframe || 7); break;
+            case 'resolved':      liveData = await bt.getResolvedMarkets(10); break;
+            case 'paused':        liveData = await bt.getMarketsByStatus('paused'); break;
+            case 'closed':        liveData = await bt.getMarketsByStatus('closed'); break;
+            case 'pending':       liveData = await bt.getMarketsByStatus('pending'); break;
+            default:              liveData = await bt.getActiveMarkets();
           }
           dataFreshness = `Live Data (${Array.isArray(liveData) ? liveData.length : liveData ? 1 : 0} markets) • ${new Date().toISOString()}`;
         } else {
-          liveData = await bt.getCurrentMarkets();
+          liveData = await bt.getAllMarkets();
           dataFreshness = `Live Data (${Array.isArray(liveData) ? liveData.length : 0} markets) • ${new Date().toISOString()}`;
         }
-        
+
         console.log('✅ Live blockchain data fetched successfully');
-      } catch (error: any) {
-        console.error('❌ Live data fetch failed:', error);
-        liveDataError = error.message || 'Unknown error';
-        dataFreshness = 'Live data unavailable - using documentation only';
+      } catch (e: any) {
+        console.error('❌ Live data fetch failed:', e);
+        liveDataError = e?.message || 'Unknown error';
         liveData = null;
+        dataFreshness = 'Live data unavailable - using documentation only';
       }
     }
 
-    const context = documents
-      .map((d) => `[${d.index}] Source: ${d.source}\n${d.content}`)
-      .join('\n\n');
-
+    const context = documents.map(d => `[${d.index}] Source: ${d.source}\n${d.content}`).join('\n\n');
     const liveContext = liveData
       ? `\n\n[Live Data at ${new Date().toISOString()}]\n${formatMarketDataCards(Array.isArray(liveData) ? liveData : [liveData], analysis.browseType || analysis.queryType)}`
-      : liveDataError
-      ? `\n\n[Live Data Error: ${liveDataError}]`
-      : '';
+      : liveDataError ? `\n\n[Live Data Error: ${liveDataError}]` : '';
 
-    const systemPrompt = `You are XO Market Expert, a friendly, helpful assistant for the XO Market prediction platform.
+    const systemPrompt = `You are XO Market Expert, a helpful assistant for the XO Market prediction platform.
 
-Tone & style:
-- Write in clear, natural language like a knowledgeable analyst speaking to a teammate.
-- Use short paragraphs and concise sentences; avoid sounding like a specification.
-- Prefer simple bullet points over dense blocks. Do not emit JSON or bracketed lists unless explicitly requested.
-- Add a one-line takeaway at the end when helpful.
+Guidelines:
+- Be clear and concise; use short paragraphs and bullets
+- Summarize first, details second
+- Format numbers like $13.3M, $2.4K, 2h 10m
+- If multiple markets are shown, use tidy bullets and keep to essentials
 
-Data use:
-- Use the provided docs for background (you may cite inline as [1], [2] only if the user asks for sources).
-- When live blockchain data is provided, lead with a plain-English summary (what changed, what matters), then show key numbers (prices, volume, OI, fees, time to close).
-- If live data failed, say so briefly and proceed with docs-based guidance.
-- When showing multiple markets, write a 1–2 sentence overview first, then present a tidy bulleted list (title, id, status, volume, time remaining). Keep numbers human-friendly: $13.3M, $2.4k, 2h 10m.
+Status Guide:
+- ACTIVE: trading open
+- PENDING: created, not started
+- CLOSED: expired, no trading
+- RESOLVED: outcome determined
+- PAUSED: temporarily suspended
+- CANCELLED: invalid/cancelled
 
-Formatting rules:
-- Never output raw JSON blocks or internal field names.
-- Avoid long repetitive dividers. Keep the message scannable.
-- Use at most 5 bullets per section.
+When live data exists, prioritize it. If it fails, say it briefly and proceed with docs-based info.
 
-Output shape (adapt as needed):
-1) One-sentence answer in plain English
-2) Brief details (1–3 short paragraphs)
-3) Bulleted facts (only essentials)
-4) If live data present: “Live data as of <ISO time>”
-5) Short closing tip
-
-Current status: ${liveDataError ? `Live blockchain data unavailable (${liveDataError}). Using documentation.` : 'Live blockchain data available.'}
+Current status: ${liveDataError ? `Live data unavailable (${liveDataError}).` : 'Live data available.'}
 `;
-
 
     const messages = [
       { role: 'system', content: systemPrompt },
@@ -280,17 +214,14 @@ Current status: ${liveDataError ? `Live blockchain data unavailable (${liveDataE
       answer = await generateGeminiResponse(messages, { temperature: 0.1, maxTokens: 1200 });
     } catch (error: any) {
       console.error('❌ Gemini API failed:', error);
-      
       if (liveData) {
         if (analysis.queryType === 'single-market') {
           const m = liveData;
           answer = `**Market #${m.id} - ${m.title}**
 
 **Status:** ${m.status.toUpperCase()}
-**Volume:** ${m.volume} USDC  
-**Open Interest:** ${m.openInterest} USDC
+**Volume:** ${formatVolume(m.volume)}  
 **Creator Fee:** ${(m.creatorFeeBps / 100).toFixed(2)}%
-**Alpha:** ${m.alpha}
 **Outcomes:** ${m.outcomeCount}
 
 *Live blockchain data fetched successfully. AI service temporarily unavailable.*`;
@@ -302,11 +233,7 @@ ${formatMarketDataCards(Array.isArray(liveData) ? liveData : [liveData], analysi
 *Live blockchain data fetched successfully. AI service temporarily unavailable.*`;
         }
       } else {
-        answer = `I apologize, but both the AI service and live blockchain data are currently unavailable due to rate limits or technical issues. 
-
-Please try again in a few minutes, or visit the XO Market documentation directly for information about the platform.
-
-**Error Details:** ${error.message || 'API rate limit exceeded'}`;
+        answer = `Both the AI service and live blockchain data are temporarily unavailable due to rate limits or service load. Please try again shortly.`;
       }
     }
 
@@ -347,11 +274,10 @@ export async function GET(_: NextRequest) {
   try {
     let blockchainStatus = 'unknown';
     try {
-      const bt = new BlockchainTools();
-      await bt.init();
+      const bt = await getBT();
       const status = bt.getConnectionStatus();
       blockchainStatus = status.connected ? 'connected' : 'disconnected';
-    } catch (error) {
+    } catch {
       blockchainStatus = 'failed';
     }
 
@@ -369,11 +295,7 @@ export async function GET(_: NextRequest) {
     });
   } catch (error: any) {
     return NextResponse.json(
-      {
-        status: 'unhealthy',
-        error: error?.message || 'Unknown error',
-        timestamp: new Date().toISOString(),
-      },
+      { status: 'unhealthy', error: error?.message || 'Unknown error', timestamp: new Date().toISOString() },
       { status: 500 }
     );
   }
