@@ -540,7 +540,7 @@ class XODiscordBot {
       const apiUrl = process.env.API_BASE_URL || 'http://localhost:3000';
       
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 60000);
+      const timeoutId = setTimeout(() => controller.abort(), 180000);
 
       const response = await fetch(`${apiUrl}/api/chat`, {
         method: 'POST',
